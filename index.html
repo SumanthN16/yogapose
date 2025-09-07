@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Real-Time Yoga Pose Detection</title>
+    <style>
+        body { font-family: sans-serif; display: flex; flex-direction: column; align-items: center; }
+        .container { display: flex; justify-content: space-around; width: 80%; margin-top: 20px; }
+        #ideal-pose-img { width: 400px; height: 300px; object-fit: contain; border: 2px solid #333; }
+        #live-video-stream { width: 400px; height: 300px; border: 2px solid #333; }
+        #feedback-box { margin-top: 20px; padding: 15px; border: 1px solid #ccc; width: 800px; min-height: 50px; }
+    </style>
+</head>
+<body>
+    <h1>Real-Time Yoga Pose Detection</h1>
+    <h2 id="currentPoseDisplay"></h2>
+    
+    <div class="container">
+        <div>
+            <h2>Ideal Pose</h2>
+            <select id="poseSelect"></select>
+            <img id="ideal-pose-img" src="" alt="Ideal Yoga Pose">
+        </div>
+        <div>
+            <h2>Your Live Video</h2>
+            <img id="live-video-stream" src="" alt="Live Video Feed">
+        </div>
+    </div>
+    
+    <div id="feedback-box">
+        <h3>Feedback:</h3>
+        <ul id="feedback-list"></ul>
+    </div>
+
+    <hr/>
+
+    <h2>Add a New Pose</h2>
+    <input type="file" id="poseImageInput" accept="image/jpeg, image/png">
+    <input type="text" id="poseNameInput" placeholder="Enter pose name">
+    <button id="addPoseButton">Add Pose to Dataset</button>
+    
+    <hr/>
+    
+    <h2>Draw Pose from JSON</h2>
+    <button id="drawPoseButton">Draw Selected Pose</button>
+    <br>
+    <img id="drawnPoseImg" src="" alt="Drawn Skeleton">
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.0/socket.io.js"></script>
+    <script>
+        const socket = io();
+        const video = document.createElement('video');
+        video.autoplay = true;
+
+        const liveVideo = document.getElementById('live-video-stream');
+        const feedbackList = document.getElementById('feedback-list');
+        const poseImageInput = document.getElementById('poseImageInput');
+        const poseNameInput = document.getElementById('poseNameInput');
+        const addPoseButton = document.getElementById('addPoseButton');
+        const poseSelect = document.getElementById('poseSelect');
+        const idealPoseImg = document.getElementById('ideal-pose-img');
+        const currentPoseDisplay = document.getElementById('currentPoseDisplay');
+        const drawPoseButton = document.getElementById('drawPoseButton');
+        const drawnPoseImg = document.getElementById('drawnPoseImg');
+
+        let isStreaming = false;
+
+        // Get webcam access
+        if (navigator.mediaDevices.getUserMedia) {
+            navigator.mediaDevices.getUserMedia({ video: true })
+                .then(function (stream) {
+                    video.srcObject = stream;
+                    isStreaming = true;
+                })
+                .catch(function (error) {
+                    console.log("Something went wrong with the webcam: ", error);
+                });
+        }
+
+        // Send video frames to the server
+        setInterval(() => {
+            if (isStreaming) {
+                const canvas = document.createElement('canvas');
+                canvas.width = video.videoWidth;
+                canvas.height = video.videoHeight;
+                const context = canvas.getContext('2d');
+                context.drawImage(video, 0, 0, canvas.width, canvas.height);
+                const dataUrl = canvas.toDataURL('image/jpeg', 0.5);
+                socket.emit('video_stream', dataUrl);
+            }
+        }, 100);
+
+        // Receive processed video and feedback from server
+        socket.on('processed_video', (data) => {
+            liveVideo.src = 'data:image/jpeg;base64,' + data.frame;
+            feedbackList.innerHTML = '';
+            const feedback = data.feedback;
+            for (const key in feedback) {
+                const li = document.createElement('li');
+                li.textContent = feedback[key];
+                feedbackList.appendChild(li);
+            }
+            currentPoseDisplay.textContent = `Current Pose: ${data.current_pose_name}`;
+        });
+
+        // Event listener for the new "Add Pose" button
+        addPoseButton.addEventListener('click', () => {
+            const file = poseImageInput.files[0];
+            const poseName = poseNameInput.value;
+
+            if (file && poseName) {
+                const reader = new FileReader();
+                reader.onload = (e) => {
+                    const imageData = e.target.result;
+                    socket.emit('add_pose', { image: imageData, name: poseName });
+                    alert(`Pose "${poseName}" sent for processing.`);
+                };
+                reader.readAsDataURL(file);
+            } else {
+                alert('Please select an image and enter a pose name.');
+            }
+        });
+        
+        // Populate the dropdown menu with pose names from the server
+        socket.on('pose_list', (data) => {
+            poseSelect.innerHTML = '';
+            for (const poseName of data.poses) {
+                const option = document.createElement('option');
+                option.value = poseName;
+                option.textContent = poseName;
+                poseSelect.appendChild(option);
+            }
+            poseSelect.value = data.poses[0];
+            idealPoseImg.src = data.ideal_pose_url;
+            socket.emit('select_pose', { pose_name: data.poses[0] });
+        });
+
+        // Event listener for pose selection
+        poseSelect.addEventListener('change', (event) => {
+            const selectedPoseName = event.target.value;
+            socket.emit('select_pose', { pose_name: selectedPoseName });
+        });
+
+        // Event listener for the new "Draw Pose" button
+        drawPoseButton.addEventListener('click', () => {
+            const poseName = poseSelect.value;
+            if (poseName) {
+                socket.emit('draw_pose', { pose_name: poseName });
+            } else {
+                alert('Please select a pose from the dropdown.');
+            }
+        });
+
+        // Receive the drawn skeleton image from the server
+        socket.on('drawn_pose', (data) => {
+            drawnPoseImg.src = 'data:image/jpeg;base64,' + data.frame;
+        });
+
+    </script>
+</body>
+</html>
