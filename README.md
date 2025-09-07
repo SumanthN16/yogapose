@@ -1,3 +1,8 @@
+#Git clone
+
+git clone https://github.com/SumanthN16/yogapose.git
+cd yogapose
+
 # installation comments
 
 # Create Env
