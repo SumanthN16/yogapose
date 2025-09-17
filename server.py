@@ -88,8 +88,6 @@ def get_feedback(current_angles, ideal_angles):
                     feedback[joint] = f"Adjust your {joint.replace('_', ' ')}: Angle is too small. Try to extend more."
                 else:
                     feedback[joint] = f"Adjust your {joint.replace('_', ' ')}: Angle is too wide. Try to bend more."
-            else:
-                feedback[joint] = f"Your {joint.replace('_', ' ')} looks correct!"
     return feedback
 
 @socketio.on('video_stream')
