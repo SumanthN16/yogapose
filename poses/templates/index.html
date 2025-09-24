@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Pose Feedback</title>
+  <style>
+    body { display: flex; flex-direction: column; align-items: center; font-family: Arial; }
+    .row { display: flex; justify-content: center; margin-top: 20px; }
+    .container { width: 45%; margin: 0 10px; border: 2px solid #ccc; padding: 10px; }
+    img, video { width: 100%; }
+    #feedback { margin-top: 20px; width: 90%; border: 2px solid #aaa; min-height: 120px; padding:10px;}
+  </style>
+</head>
+<body>
+  <h2>Pose Alignment Feedback</h2>
+
+  <div class="row">
+    <!-- Left container -->
+    <div class="container">
+      <h3>Reference Pose</h3>
+      <form method="post" enctype="multipart/form-data">
+        <input type="file" name="ref_image" accept="image/*" required>
+        <button type="submit">Upload</button>
+      </form>
+      {% if ref_image %}
+        <img src="{{ url_for('static', filename='uploads/' + ref_image) }}">
+      {% endif %}
+    </div>
+
+    <!-- Right container -->
+    <div class="container">
+      <h3>Live Camera</h3>
+      <img src="{{ url_for('video_feed') }}">
+    </div>
+  </div>
+
+  <!-- Bottom container -->
+  <div id="feedback">
+    <h3 style="text-align:center;">Feedback</h3>
+    <div id="feedbackText">Waiting for feedback...</div>
+  </div>
+
+    <script>
+    async function fetchFeedback() {
+      try {
+        const res = await fetch("/feedback_text");
+        const data = await res.json();
+        document.getElementById("feedbackText").innerText = data.feedback || "No feedback yet.";
+      } catch (err) {
+        console.error("Feedback fetch error:", err);
+      }
+    }
+    setInterval(fetchFeedback, 1000); // update every second
+  </script>
+</body>
+</html>
