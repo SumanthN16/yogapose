@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Pose App</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+  <script>
+  async function fetchFeedback(){
+    const res = await fetch('/get_feedback');
+    const data = await res.json();
+    document.getElementById("feedback-box").innerText = data.feedback;
+  }
+  setInterval(fetchFeedback,1000);
+  </script>
+</head>
+<body>
+  <header>
+    <h1>Welcome {{ user }}</h1>
+    <a href="{{ url_for('logout') }}">Logout</a>
+  </header>
+
+  <div class="container">
+    <div class="left">
+      <h3>Upload Reference Pose</h3>
+      <form method="POST" enctype="multipart/form-data">
+        <input type="file" name="ref_image" required>
+        <button type="submit">Upload</button>
+      </form>
+      {% if ref_image %}
+      <h4>Reference Pose:</h4>
+      <img src="{{ url_for('static', filename='uploads/' + ref_image) }}" class="preview">
+      {% endif %}
+    </div>
+
+    <div class="right">
+      <h3>Live Camera</h3>
+      <img src="{{ url_for('video_feed') }}" class="camera">
+    </div>
+  </div>
+
+  <div class="feedback-container">
+    <h3>Feedback</h3>
+    <div id="feedback-box">Waiting for camera...</div>
+  </div>
+</body>
+</html>

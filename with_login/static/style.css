@@ -1,0 +1,61 @@
+body {
+    font-family: Arial, sans-serif;
+    background: #f3f5f7;
+    margin: 0;
+    padding: 0;
+}
+header {
+    background: #4a90e2;
+    color: white;
+    padding: 15px;
+    display: flex;
+    justify-content: space-between;
+}
+.container {
+    display: flex;
+    margin: 20px;
+    gap: 20px;
+}
+.left, .right {
+    background: white;
+    padding: 20px;
+    border-radius: 8px;
+    width: 45%;
+    box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+}
+.preview, .camera {
+    width: 100%;
+    border-radius: 8px;
+    margin-top: 10px;
+}
+.feedback-container {
+    background: white;
+    margin: 20px;
+    padding: 20px;
+    border-radius: 8px;
+    box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+}
+.form-container {
+    width: 300px;
+    margin: 100px auto;
+    background: white;
+    padding: 20px;
+    border-radius: 8px;
+    box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+}
+input, button {
+    width: 90%;
+    padding: 10px;
+    margin: 10px 0;
+}
+button {
+    background: #4a90e2;
+    color: white;
+    border: none;
+    cursor: pointer;
+}
+button:hover {
+    background: #357ab8;
+}
+.flash.success {color: green;}
+.flash.danger {color: red;}
