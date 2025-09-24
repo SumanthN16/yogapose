@@ -1,0 +1,30 @@
+body {
+    font-family: Arial, sans-serif;
+    background: #f7f7f7;
+    margin: 0;
+    padding: 0;
+}
+.container {
+    display: flex;
+    justify-content: space-between;
+    padding: 20px;
+}
+.left, .right {
+    background: #fff;
+    padding: 15px;
+    width: 45%;
+    box-shadow: 0 0 10px rgba(0,0,0,0.1);
+}
+.bottom {
+    margin: 20px;
+    background: #fff;
+    padding: 20px;
+    box-shadow: 0 0 10px rgba(0,0,0,0.1);
+}
+.feedback-box {
+    min-height: 100px;
+    border: 1px dashed #aaa;
+}
+button {
+    margin-top: 10px;
+}
