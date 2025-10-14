@@ -5,13 +5,14 @@ from flask import Flask, render_template, Response, request, jsonify
 from werkzeug.utils import secure_filename
 import mediapipe as mp
 import threading
+import json
 
 app = Flask(__name__)
 UPLOAD_FOLDER = 'static/uploads'
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
 # ---------- Globals ----------
-latest_feedback = ""      # ✅ Global feedback text
+latest_feedback = ""      # global feedback text
 feedback_lock = threading.Lock()
 
 mp_pose = mp.solutions.pose
@@ -22,48 +23,53 @@ pose = mp_pose.Pose(static_image_mode=False,
                     min_tracking_confidence=0.6)
 mp_drawing = mp.solutions.drawing_utils
 
-# global reference
+# global reference data
 reference_angles = None
-reference_points = None
+reference_joints = None
 
-def calc_angle(a,b,c):
-    """Angle at b (in degrees) using 3 normalized points"""
-    a,b,c = np.array(a), np.array(b), np.array(c)
+def calc_angle(a, b, c):
+    """Compute angle in degrees at point b using 2D points a, b, c."""
+    a = np.array(a)
+    b = np.array(b)
+    c = np.array(c)
     ba = a - b
     bc = c - b
-    cosine = np.dot(ba,bc) / (np.linalg.norm(ba)*np.linalg.norm(bc) + 1e-6)
-    return np.degrees(np.arccos(np.clip(cosine,-1.0,1.0)))
+    # avoid division by zero
+    denom = (np.linalg.norm(ba) * np.linalg.norm(bc) + 1e-6)
+    cosine = np.dot(ba, bc) / denom
+    cosine = np.clip(cosine, -1.0, 1.0)
+    return float(np.degrees(np.arccos(cosine)))
 
 def get_pose_landmarks(image):
+    """Return list of (x, y, visibility) for 33 landmarks or empty if none."""
     rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
     res = pose.process(rgb)
-    if not res.pose_landmarks: return []
+    if not res.pose_landmarks:
+        return []
     return [(lm.x, lm.y, lm.visibility) for lm in res.pose_landmarks.landmark]
 
 def compute_key_angles(pts):
-    """Return a dict of key joint angles for pose comparison."""
-    if len(pts) < 33: return {}
-    # Use only x,y
-    p = [(x,y) for x,y,_ in pts]
+    """From 33 pts, compute dictionary of selected joint angles (consistent key names)."""
+    # Need at least full 33 pts
+    if len(pts) < 33:
+        return {}
+    # Working only x,y parts
+    p = [(x, y) for x, y, _ in pts]
     def g(idx): return p[idx]
+    # Example mapping (you can adjust or extend)
     return {
-        "left_elbow":  calc_angle(g(11), g(13), g(15)),
-        "right_elbow": calc_angle(g(12), g(14), g(16)),
-        "left_knee":   calc_angle(g(23), g(25), g(27)),
-        "right_knee":  calc_angle(g(24), g(26), g(28)),
-        "left_shldr":  calc_angle(g(13), g(11), g(23)),
-        "right_shldr": calc_angle(g(14), g(12), g(24)),
-        "hip":         calc_angle(g(11), g(23), g(25))
+        "left_elbow":    calc_angle(g(13), g(11), g(23)),  # maybe adjust this triplet
+        "right_elbow":   calc_angle(g(14), g(12), g(24)),
+        "left_knee":     calc_angle(g(25), g(23), g(11)),
+        "right_knee":    calc_angle(g(26), g(24), g(12)),
+        "left_shoulder": calc_angle(g(11), g(13), g(15)),
+        "right_shoulder":calc_angle(g(12), g(14), g(16)),
+        # you can add more, e.g. hip, back, etc.
     }
-
-def body_ratio(pts):
-    """Simple height measure to normalize distances."""
-    if len(pts) < 33: return 1
-    return np.linalg.norm(np.array(pts[11][:2]) - np.array(pts[27][:2]))
 
 @app.route("/", methods=["GET", "POST"])
 def index():
-    global reference_angles, reference_points
+    global reference_angles, reference_joints
     ref_image = None
     if request.method == "POST":
         f = request.files["ref_image"]
@@ -71,53 +77,61 @@ def index():
         path = os.path.join(UPLOAD_FOLDER, filename)
         f.save(path)
 
+        # load image and compute reference pose
         img = cv2.imread(path)
         pts = get_pose_landmarks(img)
         if pts:
-            reference_points = pts
+            reference_joints = pts
             reference_angles = compute_key_angles(pts)
             ref_image = filename
+            # Optionally, save the reference JSON for reuse
+            ref_json = {
+                "image_path": filename,
+                "joints": pts,
+                "angles": reference_angles
+            }
+            # You can save to file
+            with open(os.path.join(UPLOAD_FOLDER, filename + "_ref.json"), "w") as fjson:
+                json.dump(ref_json, fjson)
     return render_template("index.html", ref_image=ref_image)
 
 def generate_camera():
-    global latest_feedback
+    global latest_feedback, reference_angles
     cap = cv2.VideoCapture(0)
-    tolerance = 15      # degrees
-    # feedback_text = ""
+    tolerance = 15.0  # degrees
 
     while True:
         ret, frame = cap.read()
-        if not ret: break
-        frame = cv2.flip(frame,1)
+        if not ret:
+            break
+        frame = cv2.flip(frame, 1)
         pts = get_pose_landmarks(frame)
 
-        feedback = []
-        color_map = {}
+        feedback_list = []
+        color_map = {}  # angle_name -> color
 
         if not pts:
-            feedback.append("Full body not detected – step back")
+            feedback_list.append("Cannot detect full body")
         else:
-            # check number of bodies (mediapipe gives only best detection,
-            # but we can use segmentation mask area to estimate)
-            # → simplified check: if key landmarks are low visibility
-            visible = [v for _,_,v in pts if v>0.5]
-            if len(visible)<15:
-                feedback.append("Full body not fully visible")
+            # Check visibility
+            vis_count = sum(1 for _, _, v in pts if v > 0.5)
+            if vis_count < 15:
+                feedback_list.append("Body not fully visible")
 
             if reference_angles:
                 cur_angles = compute_key_angles(pts)
-                for k,ref_angle in reference_angles.items():
-                    if k in cur_angles:
-                        if abs(cur_angles[k]-ref_angle) > tolerance:
-                            feedback.append(f"Adjust {k.replace('_',' ')}")
-                            color_map[k] = (0,0,255)  # red
+                for key, ref_ang in reference_angles.items():
+                    if key in cur_angles:
+                        live_ang = cur_angles[key]
+                        diff = live_ang - ref_ang
+                        if abs(diff) > tolerance:
+                            feedback_list.append(f"Adjust {key}")
+                            color_map[key] = (0, 0, 255)
                         else:
-                            color_map[k] = (0,255,0)  # green
-        
-        # Draw skeleton
-        # ---------- Drawing section ----------
+                            color_map[key] = (0, 255, 0)
+
+        # Draw skeleton on frame
         if pts:
-            # Use the raw mediapipe output to draw skeleton
             rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             results = pose.process(rgb)
             if results.pose_landmarks:
@@ -126,28 +140,37 @@ def generate_camera():
                     results.pose_landmarks,
                     mp_pose.POSE_CONNECTIONS,
                     landmark_drawing_spec=mp_drawing.DrawingSpec(color=(0,255,0), thickness=2, circle_radius=2),
-                    connection_drawing_spec=mp_drawing.DrawingSpec(color=(0,255,0), thickness=2))
-        # Custom joint coloring
-        h,w = frame.shape[:2]
+                    connection_drawing_spec=mp_drawing.DrawingSpec(color=(0,255,0), thickness=2)
+                )
+
+        # Overlay feedback colored joints
+        h, w = frame.shape[:2]
         if pts:
-            p2d = [(int(x*w), int(y*h)) for x,y,_ in pts]
-            for name,col in color_map.items():
-                if "elbow" in name:
-                    idx = 13 if "left" in name else 14
-                elif "knee" in name:
-                    idx = 25 if "left" in name else 26
-                elif "shldr" in name:
-                    idx = 11 if "left" in name else 12
-                elif "hip" in name:
-                    idx = 23
-                else: continue
-                cv2.circle(frame, p2d[idx], 6, col, -1)
+            p2d = [(int(x * w), int(y * h)) for x, y, _ in pts]
+            for key, col in color_map.items():
+                # Map angle_name to a landmark index
+                # e.g. left_elbow -> index 13; right_elbow -> 14, etc.
+                idx = None
+                if key == "left_elbow":
+                    idx = 13
+                elif key == "right_elbow":
+                    idx = 14
+                elif key == "left_knee":
+                    idx = 25
+                elif key == "right_knee":
+                    idx = 26
+                elif key == "left_shoulder":
+                    idx = 11
+                elif key == "right_shoulder":
+                    idx = 12
+                if idx is not None and idx < len(p2d):
+                    cv2.circle(frame, p2d[idx], 8, col, -1)
+
         with feedback_lock:
-            latest_feedback = ", ".join(feedback) if feedback else "Good posture!"
-                    
-        # feedback_text = ", ".join(feedback) if feedback else "Good posture!"
-        # cv2.putText(frame, feedback_text, (10,30),
-        #             cv2.FONT_HERSHEY_SIMPLEX, 0.7,(255,255,0),2)
+            if feedback_list:
+                latest_feedback = "; ".join(feedback_list)
+            else:
+                latest_feedback = "Good posture"
 
         _, buffer = cv2.imencode('.jpg', frame)
         yield (b'--frame\r\n'
@@ -158,12 +181,10 @@ def video_feed():
     return Response(generate_camera(),
                     mimetype="multipart/x-mixed-replace; boundary=frame")
 
-
 @app.route("/feedback_text")
 def feedback_text():
     with feedback_lock:
         return jsonify({"feedback": latest_feedback})
-    
-    
+
 if __name__ == "__main__":
     app.run(debug=True)
