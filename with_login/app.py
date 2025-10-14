@@ -148,7 +148,7 @@ def generate_camera():
             # check number of bodies (mediapipe gives only best detection,
             # but we can use segmentation mask area to estimate)
             # → simplified check: if key landmarks are low visibility
-            visible = [v for _,_,v in pts if v>0.5]
+            visible = [v for _,_,v in pts if v>0.8]
             if len(visible)<15:
                 feedback.append("Full body not fully visible")
 
