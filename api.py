@@ -191,13 +191,115 @@ def compare_pose():
                         "new_angle": new_ang,
                         "difference": diff
                     })
+        # LIVE JOINT FEEDBACK (coordinates + correctness)
+        live_joint_feedback = []
+        h, w, _ = img.shape
+
+        # Tolerance in degrees based on your % logic
+        tolerance_degrees = {
+            j: tolerance_percent * abs(ref_angles[j])
+            for j in ref_angles
+        }
+
+        # Mapping your angle names → Mediapipe indexes
+        JOINT_LANDMARK_MAP = {
+            "left_elbow": mp_pose.PoseLandmark.LEFT_ELBOW,
+            "right_elbow": mp_pose.PoseLandmark.RIGHT_ELBOW,
+            "left_knee": mp_pose.PoseLandmark.LEFT_KNEE,
+            "right_knee": mp_pose.PoseLandmark.RIGHT_KNEE,
+            "left_shoulder": mp_pose.PoseLandmark.LEFT_SHOULDER,
+            "right_shoulder": mp_pose.PoseLandmark.RIGHT_SHOULDER,
+            "hip": mp_pose.PoseLandmark.LEFT_HIP,  # choose left hip for the hip angle
+        }
+
+        for joint_name, ref_angle in ref_angles.items():
+            if joint_name not in new_angles:
+                continue  # landmark not available
+
+            new_angle = new_angles[joint_name]
+            lm = JOINT_LANDMARK_MAP.get(joint_name)
+            if lm is None:
+                continue
+
+            lx = res.pose_landmarks.landmark[lm].x * w
+            ly = res.pose_landmarks.landmark[lm].y * h
+
+            is_correct = abs(new_angle - ref_angle) <= tolerance_degrees[joint_name]
+
+            live_joint_feedback.append({
+                "joint_name": joint_name,
+                "x": float(lx),
+                "y": float(ly),
+                "is_correct": is_correct
+            })
+
+        # -----------------------------
+        # EXTRA FEATURES: Skeleton + Accuracy + Audio Feedback
+        # -----------------------------
+
+        # 1. Skeleton lines (connections from Mediapipe Pose)
+        POSE_CONNECTIONS = [
+            (11, 13), (13, 15),   # Left Arm
+            (12, 14), (14, 16),   # Right Arm
+            (11, 12),             # Shoulders
+            (23, 24),             # Hips
+            (11, 23), (12, 24),   # Torso sides
+            (23, 25), (25, 27),   # Left Leg
+            (24, 26), (26, 28)    # Right Leg
+        ]
+
+        h, w, _ = img.shape
+
+        skeleton_lines = []
+        for a, b in POSE_CONNECTIONS:
+            ax = new_pts[a][0] * w
+            ay = new_pts[a][1] * h
+            bx = new_pts[b][0] * w
+            by = new_pts[b][1] * h
+            skeleton_lines.append({
+                "x1": float(ax), "y1": float(ay),
+                "x2": float(bx), "y2": float(by)
+            })
+
+        # 2. Percentage Accuracy Calculation
+        total_joints = 0
+        correct_joints = 0
+
+        for joint, ref_ang in ref_angles.items():
+            if joint in new_angles:
+                total_joints += 1
+                new_ang = new_angles[joint]
+                diff = abs(new_ang - ref_ang)
+                tolerance_deg = tolerance_percent * abs(ref_ang)
+
+                if diff <= tolerance_deg:
+                    correct_joints += 1
+
+        pose_accuracy = 0
+        if total_joints > 0:
+            pose_accuracy = round((correct_joints / total_joints) * 100, 2)
+
+        # 3. Audio Feedback (Correct / Wrong)
+        audio_feedback = "correct" if pose_accuracy >= 80 else "wrong"
+
+        # Add to response
+        extra_feedback = {
+            "skeleton": skeleton_lines,
+            "pose_accuracy": pose_accuracy,
+            "audio_feedback": audio_feedback
+        }
 
         return jsonify({
             "reference_pose": {
                 "pose_name": ref_pose_name,
                 "pose_number": reference_pose_number
             },
-            "adjustments_needed": adjustments
+            "adjustments_needed": adjustments,
+            "live_feedback": live_joint_feedback,
+            "skeleton": skeleton_lines,
+            "pose_accuracy": pose_accuracy,
+            "audio_feedback": audio_feedback,
+            "extra_feedback": extra_feedback
         })
     except Exception as e:
         app.logger.error(f"Error in compare_pose: {str(e)}")

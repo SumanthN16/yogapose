@@ -1,9 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 
-// Default export React component (single-file app)
-// Tailwind is used for styling (no imports required in this environment)
-// This component provides two pages: Compare (live camera vs reference JSON pose)
-// and Add Pose (upload an image + metadata to the backend).
+// Single-file React component (Tailwind assumed available)
+// Upgraded to draw live joint points, skeleton lines, show accuracy, and voice feedback
 
 export default function YogaPoseApp() {
   const [page, setPage] = useState("compare"); // 'compare' or 'add'
@@ -42,33 +40,76 @@ export default function YogaPoseApp() {
 // ---------------- Compare Page ----------------
 function ComparePage() {
   const videoRef = useRef(null);
-  const canvasRef = useRef(null);
-  const [asanas, setAsanas] = useState([]); // array of {asana_name}
+  const captureCanvasRef = useRef(null); // hidden canvas used to capture frames
+  const overlayRef = useRef(null); // visible drawing canvas
+
+  const [asanas, setAsanas] = useState([]);
   const [selectedAsana, setSelectedAsana] = useState("");
-  const [posesInAsana, setPosesInAsana] = useState([]); // from /asanas/:name
+  const [posesInAsana, setPosesInAsana] = useState([]);
   const [selectedPoseNumber, setSelectedPoseNumber] = useState(1);
   const [selectedPose, setSelectedPose] = useState(null);
-  const [tolerance, setTolerance] = useState(20); // percentage
+  const [tolerance, setTolerance] = useState(20);
   const [feedback, setFeedback] = useState(null);
   const [isComparing, setIsComparing] = useState(false);
   const [error, setError] = useState(null);
   const [continuousMode, setContinuousMode] = useState(false);
-  // Start camera on mount
+
+  // local copy of last live_feedback (used for drawing loop)
+  const lastFeedbackRef = useRef(null);
+  const lastAudioRef = useRef(null);
+
   useEffect(() => {
     startCamera();
     fetchAsanas();
-
+    const handleResize = () => resizeOverlay();
+    window.addEventListener("resize", handleResize);
     return () => {
       stopCamera();
+      window.removeEventListener("resize", handleResize);
     };
   }, []);
 
+  useEffect(() => {
+    if (selectedPose && continuousMode) {
+      const interval = setInterval(() => {
+        handleCompareOnce();
+      }, 1200);
+      return () => clearInterval(interval);
+    }
+  }, [selectedPose, continuousMode, tolerance, handleCompareOnce]);
+
+  useEffect(() => {
+    startDrawingLoop();
+    // stop on unmount
+    return () => stopDrawingLoop();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  function startDrawingLoop() {
+    let rafId = null;
+    const loop = () => {
+      drawOverlay(lastFeedbackRef.current);
+      rafId = requestAnimationFrame(loop);
+    };
+    loop();
+    overlayRef.current.__rafId = rafId;
+  }
+
+  function stopDrawingLoop() {
+    const c = overlayRef.current;
+    if (c && c.__rafId) {
+      cancelAnimationFrame(c.__rafId);
+      delete c.__rafId;
+    }
+  }
+
   async function startCamera() {
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+      const stream = await navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 480 }, audio: false });
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
         await videoRef.current.play();
+        resizeOverlay();
       }
     } catch (e) {
       console.error("Could not access camera", e);
@@ -84,31 +125,36 @@ function ComparePage() {
     }
   }
 
+  function resizeOverlay() {
+    const video = videoRef.current;
+    const canvas = overlayRef.current;
+    if (!video || !canvas) return;
+    // match canvas CSS size to video element size
+    const rect = video.getBoundingClientRect();
+    canvas.style.width = rect.width + "px";
+    canvas.style.height = rect.height + "px";
+    // set backing store size to video resolution for crisp drawing
+    canvas.width = video.videoWidth || rect.width;
+    canvas.height = video.videoHeight || rect.height;
+  }
+
   async function fetchAsanas() {
-    // Try to fetch a list of asanas. The backend provided earlier doesn't include a list endpoint,
-    // so this call might fail. We attempt /asanas (expecting JSON list) and fall back to nothing.
     try {
       const resp = await fetch("http://127.0.0.1:5000/asanas");
       if (!resp.ok) throw new Error("no-asanas-endpoint");
       const data = await resp.json();
-      // If server returns a list of names, use that. Otherwise, if server returned an object, adapt.
       if (Array.isArray(data)) {
         setAsanas(data);
         if (data.length) setSelectedAsana(data[0]);
       } else if (data.asanas && Array.isArray(data.asanas)) {
         setAsanas(data.asanas);
         if (data.asanas.length) setSelectedAsana(data.asanas[0]);
-      } else {
-        // unknown shape — ignore
-        console.warn("/asanas returned unexpected shape", data);
       }
     } catch (e) {
-      // Graceful fallback: allow user to type asana name manually
       console.warn("Could not fetch asana list:", e);
     }
   }
 
-  // When asana changes, fetch its poses
   useEffect(() => {
     if (!selectedAsana) return;
     fetch(`http://127.0.0.1:5000/asanas/${encodeURIComponent(selectedAsana)}`)
@@ -116,7 +162,6 @@ function ComparePage() {
       .then((data) => {
         if (data && data.poses) {
           setPosesInAsana(data.poses);
-          // Auto-select first pose if available
           if (data.poses.length > 0) {
             setSelectedPose(data.poses[0]);
             setSelectedPoseNumber(data.poses[0].pose_number);
@@ -133,7 +178,7 @@ function ComparePage() {
       });
   }, [selectedAsana]);
 
-  const handleCompareOnce = useCallback(async () => {
+  async function handleCompareOnce() {
     setIsComparing(true);
     setFeedback(null);
     setError(null);
@@ -161,39 +206,136 @@ function ComparePage() {
       }
 
       setFeedback(result);
+      lastFeedbackRef.current = result;
+
+      // speak audio feedback
+      if (result.audio_feedback && lastAudioRef.current !== result.audio_feedback) {
+        speakFeedback(result.audio_feedback);
+        lastAudioRef.current = result.audio_feedback;
+      }
     } catch (e) {
       console.error(e);
       setError(String(e));
     } finally {
       setIsComparing(false);
     }
-  }, [selectedAsana, selectedPoseNumber, tolerance]);
+  }
 
-  // Start continuous comparison when pose is selected
-  useEffect(() => {
-    if (selectedPose && continuousMode) {
-      const interval = setInterval(() => {
-        handleCompareOnce();
-      }, 1500); // every 1.5 seconds
-      return () => clearInterval(interval);
-    }
-  }, [selectedPose, continuousMode, tolerance, handleCompareOnce]);
 
   function captureFrame() {
-    if (!videoRef.current) return null;
     const video = videoRef.current;
+    const canvas = captureCanvasRef.current;
+    if (!video || !canvas) return null;
     const w = video.videoWidth || 640;
     const h = video.videoHeight || 480;
-
-    canvasRef.current.width = w;
-    canvasRef.current.height = h;
-    const ctx = canvasRef.current.getContext("2d");
+    canvas.width = w;
+    canvas.height = h;
+    const ctx = canvas.getContext("2d");
     ctx.drawImage(video, 0, 0, w, h);
     return new Promise((resolve) => {
-      canvasRef.current.toBlob((blob) => {
-        resolve(blob);
-      }, "image/jpeg", 0.9);
+      canvas.toBlob((blob) => resolve(blob), "image/jpeg", 0.9);
     });
+  }
+
+  // simple TTS for audio feedback
+  function speakFeedback(flag) {
+    try {
+      const utterance = new SpeechSynthesisUtterance(flag === "correct" ? "Correct" : "Wrong");
+      utterance.lang = "en-US";
+      window.speechSynthesis.cancel();
+      window.speechSynthesis.speak(utterance);
+    } catch (e) {
+      // ignore TTS failures
+    }
+  }
+
+  function drawOverlay(data) {
+    const canvas = overlayRef.current;
+    const video = videoRef.current;
+    if (!canvas || !video) return;
+    const ctx = canvas.getContext("2d");
+    // Clear
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+    // Draw semi-transparent background when no data
+    if (!data) return;
+
+    // draw skeleton lines
+    if (Array.isArray(data.skeleton)) {
+      ctx.lineWidth = 3;
+      data.skeleton.forEach((seg) => {
+        ctx.beginPath();
+        ctx.strokeStyle = "rgba(0,0,0,0.5)";
+        ctx.moveTo(seg.x1, seg.y1);
+        ctx.lineTo(seg.x2, seg.y2);
+        ctx.stroke();
+      });
+    }
+
+    // draw joints
+    if (Array.isArray(data.live_feedback)) {
+      data.live_feedback.forEach((j) => {
+        const color = j.is_correct ? "#22c55e" : "#ef4444"; // green/red
+        ctx.beginPath();
+        ctx.fillStyle = color;
+        ctx.strokeStyle = "#00000055";
+        ctx.lineWidth = 1;
+        // radius relative to canvas size
+        const r = Math.max(6, Math.min(12, canvas.width / 80));
+        ctx.arc(j.x, j.y, r, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+
+        // label
+        ctx.font = "14px Arial";
+        ctx.fillStyle = color;
+        const label = j.joint_name.replace(/_/g, " ");
+        ctx.fillText(label, j.x + r + 4, j.y + 4);
+      });
+    }
+
+    // draw accuracy badge
+    if (typeof data.pose_accuracy === "number") {
+      const score = data.pose_accuracy;
+      // top-right corner
+      const pad = 12;
+      const boxW = 110;
+      const boxH = 46;
+      const x = canvas.width - boxW - pad;
+      const y = pad;
+
+      // background
+      ctx.fillStyle = "rgba(255,255,255,0.9)";
+      ctx.strokeStyle = "#e5e7eb";
+      roundRect(ctx, x, y, boxW, boxH, 8, true, true);
+
+      // text
+      ctx.fillStyle = "#111827";
+      ctx.font = "bold 16px Arial";
+      ctx.fillText(`Accuracy`, x + 12, y + 18);
+      ctx.font = "bold 18px Arial";
+      ctx.fillStyle = score >= 80 ? "#15803d" : score >= 50 ? "#d97706" : "#b91c1c";
+      ctx.fillText(`${score}%`, x + 12, y + 38);
+    }
+  }
+
+  function roundRect(ctx, x, y, w, h, r, fill, stroke) {
+    if (typeof r === 'number') {
+      r = {tl: r, tr: r, br: r, bl: r};
+    }
+    ctx.beginPath();
+    ctx.moveTo(x + r.tl, y);
+    ctx.lineTo(x + w - r.tr, y);
+    ctx.quadraticCurveTo(x + w, y, x + w, y + r.tr);
+    ctx.lineTo(x + w, y + h - r.br);
+    ctx.quadraticCurveTo(x + w, y + h, x + w - r.br, y + h);
+    ctx.lineTo(x + r.bl, y + h);
+    ctx.quadraticCurveTo(x, y + h, x, y + h - r.bl);
+    ctx.lineTo(x, y + r.tl);
+    ctx.quadraticCurveTo(x, y, x + r.tl, y);
+    ctx.closePath();
+    if (fill) ctx.fill();
+    if (stroke) ctx.stroke();
   }
 
   return (
@@ -201,10 +343,17 @@ function ComparePage() {
       <section className="grid grid-cols-1 md:grid-cols-2 gap-4">
         <div className="bg-white p-4 rounded-lg shadow">
           <h2 className="font-semibold mb-2">Live Camera</h2>
-          <div className="border rounded overflow-hidden">
-            <video ref={videoRef} className="w-full h-64 object-cover bg-black" playsInline />
+
+          <div className="relative border rounded overflow-hidden" style={{height: 384}}>
+            <video ref={videoRef} className="w-full h-full object-cover bg-black" playsInline muted />
+
+            {/* overlay canvas sits on top for drawing skeleton & joints */}
+            <canvas ref={overlayRef} className="absolute top-0 left-0 pointer-events-none" />
           </div>
-          <canvas ref={canvasRef} className="hidden" />
+
+          {/* hidden capture canvas used to create image blob for backend */}
+          <canvas ref={captureCanvasRef} className="hidden" />
+
           {isComparing && <div className="text-sm text-gray-500 mt-2">Comparing...</div>}
           {error && <div className="text-sm text-red-600 mt-2">{error}</div>}
         </div>
@@ -259,23 +408,11 @@ function ComparePage() {
             </select>
           </div>
 
-          <div>
-            <label className="block text-sm font-medium mb-2">Tolerance: {tolerance}%</label>
-            <input
-              type="range"
-              min="5"
-              max="50"
-              value={tolerance}
-              onChange={(e) => setTolerance(Number(e.target.value))}
-              className="w-full"
-            />
-            <div className="text-xs text-gray-500 mt-1">Adjust sensitivity for pose matching</div>
-          </div>
         </div>
 
         <div className="mt-4 flex gap-2">
           <button
-            onClick={() => setContinuousMode(!continuousMode)}
+            onClick={() => { setContinuousMode(!continuousMode); }}
             className={`px-4 py-2 rounded ${continuousMode ? "bg-red-500 text-white" : "bg-green-600 text-white"}`}
             disabled={!selectedPose}
           >
@@ -295,6 +432,12 @@ function ComparePage() {
         {feedback && (
           <div>
             <div className="mb-2 text-sm text-gray-600">Comparing live frame to <strong>{feedback.reference_pose?.pose_name || "reference"}</strong> (Pose #{feedback.reference_pose?.pose_number})</div>
+
+            <div className="flex items-center gap-3 mb-3">
+              <div className="text-sm">Pose Accuracy:</div>
+              <div className="font-bold text-lg">{feedback.pose_accuracy ?? 0}%</div>
+              <div className="text-xs text-gray-500">(Audio: {feedback.audio_feedback})</div>
+            </div>
 
             {Array.isArray(feedback.adjustments_needed) && feedback.adjustments_needed.length === 0 && (
               <div className="p-3 rounded bg-green-50 text-green-700">Great! No major adjustments (within threshold).</div>
